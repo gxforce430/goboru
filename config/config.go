@@ -9,9 +9,9 @@ import (
 )
 
 type Auth struct {
-	JWTSecret          string
-	AccessTokenTTL     int
-	RefreshTokenTTL    int
+	JWTSecret  string
+	SessionTTL int
+
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleCallbackURL  string
@@ -50,9 +50,9 @@ func Load() Config {
 // Loaders
 func loadAuthConfig() Auth {
 	return Auth{
-		JWTSecret:          mustGetEnv("AUTH_JWT_SECRET"),
-		AccessTokenTTL:     getEnvAsInt("AUTH_ACCESS_TOKEN_TTL", 15),
-		RefreshTokenTTL:    getEnvAsInt("AUTH_REFRESH_TOKEN_TTL", 43200),
+		JWTSecret:  mustGetEnv("AUTH_JWT_SECRET"),
+		SessionTTL: getEnvAsInt("SESSION_TTL", 3600),
+
 		GoogleClientID:     mustGetEnv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: mustGetEnv("GOOGLE_CLIENT_SECRET"),
 		GoogleCallbackURL:  mustGetEnv("GOOGLE_CALLBACK_URL"),
