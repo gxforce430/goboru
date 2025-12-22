@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"time"
 
 	"github.com/fahmaliyi/goboruu/api"
@@ -12,9 +13,19 @@ import (
 func main() {
 	cfg := config.Load()
 
+	// Connect to DB
+	db, err := config.ConnectDB(cfg.Database.DATABASE_URI)
+	if err != nil {
+		log.Fatalf("Fatal error during database initialization: %v", err)
+	}
+	defer db.Close()
+
 	hasher := auth.NewBcryptHasher(12)
-	bookStore := books.NewInMemoryStore()
-	userStore := auth.NewInMemoryUserStore()
+	// bookStore := books.NewInMemoryStore()
+	// userStore := auth.NewInMemoryUserStore()
+
+	userStore := auth.NewPostgresUserStore(db)
+	bookStore := books.NewPostgresBookStore(db)
 
 	tokenManager := auth.NewJWTTokenManager(
 		cfg.Auth.JWTSecret,

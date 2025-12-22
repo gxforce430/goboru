@@ -25,8 +25,9 @@ type Server struct {
 }
 
 type Database struct {
-	Driver string
-	DSN    string
+	Driver       string
+	DSN          string
+	DATABASE_URI string
 }
 
 type Config struct {
@@ -36,7 +37,6 @@ type Config struct {
 }
 
 func Load() Config {
-	// Load .env file if exists
 	if err := godotenv.Load(); err != nil {
 		log.Println("warning: .env file not found, using system env")
 	}
@@ -53,7 +53,7 @@ func loadAuthConfig() Auth {
 	return Auth{
 		JWTSecret:          mustGetEnv("AUTH_JWT_SECRET"),
 		AccessTokenTTL:     getEnvAsInt("AUTH_ACCESS_TOKEN_TTL", 15),
-		RefreshTokenTTL:    getEnvAsInt("AUTH_REFRESH_TOKEN_TTL", 43200), // 30 days
+		RefreshTokenTTL:    getEnvAsInt("AUTH_REFRESH_TOKEN_TTL", 43200),
 		GoogleClientID:     mustGetEnv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: mustGetEnv("GOOGLE_CLIENT_SECRET"),
 		GoogleCallbackURL:  mustGetEnv("GOOGLE_CALLBACK_URL"),
@@ -71,8 +71,9 @@ func loadServerConfig() Server {
 
 func loadDatabaseConfig() Database {
 	return Database{
-		Driver: getEnv("DB_DRIVER", "postgres"),
-		DSN:    mustGetEnv("DB_DSN"),
+		Driver:       getEnv("DB_DRIVER", "postgres"),
+		DSN:          mustGetEnv("DB_DSN"),
+		DATABASE_URI: mustGetEnv("DATABASE_URI"),
 	}
 }
 
