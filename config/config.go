@@ -26,7 +26,6 @@ type Server struct {
 
 type Database struct {
 	Driver       string
-	DSN          string
 	DATABASE_URI string
 }
 
@@ -72,7 +71,6 @@ func loadServerConfig() Server {
 func loadDatabaseConfig() Database {
 	return Database{
 		Driver:       getEnv("DB_DRIVER", "postgres"),
-		DSN:          mustGetEnv("DB_DSN"),
 		DATABASE_URI: mustGetEnv("DATABASE_URI"),
 	}
 }
