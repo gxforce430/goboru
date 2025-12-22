@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-const refreshTokenCookieName = "refresh_token"
+const sessionCookieName = "session_id"
 
 type AuthHandler struct {
 	service        *auth.Service
@@ -35,23 +36,24 @@ func (h *AuthHandler) RegisterRoutes(r chi.Router) {
 }
 
 func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(refreshTokenCookieName)
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		h.handleServiceError(w, auth.ErrUnauthorized)
 		return
 	}
 
-	user, tokens, err := h.service.Refresh(r.Context(), cookie.Value)
+	fmt.Println("Cookie value ", cookie.Value)
+
+	user, session, err := h.service.Refresh(r.Context(), cookie.Value)
 	if err != nil {
-		h.clearAuthCookies(w)
+		h.clearSessionCookie(w)
 		h.handleServiceError(w, err)
 		return
 	}
 
-	h.setRefreshTokenCookie(w, tokens.RefreshToken)
+	h.setSessionCookie(w, session.ID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token": tokens.AccessToken,
 		"user": map[string]any{
 			"id":    user.ID,
 			"name":  user.Name,
@@ -65,47 +67,40 @@ func (h *AuthHandler) signin(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	user, tokens, err := h.service.Login(r.Context(), req.Email, req.Password)
+	user, session, err := h.service.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
 	}
-	h.setRefreshTokenCookie(w, tokens.RefreshToken)
 
-	writeJSON(w, http.StatusOK, struct {
-		User struct {
-			ID    string `json:"id"`
-			Email string `json:"email"`
-			Name  string `json:"name"`
-		} `json:"user"`
-		Token string `json:"token"`
-	}{
-		User: struct {
-			ID    string `json:"id"`
-			Email string `json:"email"`
-			Name  string `json:"name"`
-		}{
-			ID:    user.ID,
-			Name:  user.Name,
-			Email: user.Email,
+	h.setSessionCookie(w, session.ID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": map[string]any{
+			"id":    user.ID,
+			"name":  user.Name,
+			"email": user.Email,
 		},
-		Token: tokens.AccessToken,
 	})
 }
 
 func (h *AuthHandler) signout(w http.ResponseWriter, r *http.Request) {
-	_, err := r.Cookie(refreshTokenCookieName)
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		h.handleServiceError(w, auth.ErrUnauthorized)
 		return
 	}
 
-	h.clearAuthCookies(w)
+	_ = h.service.Logout(r.Context(), cookie.Value)
+	h.clearSessionCookie(w)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +109,7 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
@@ -138,14 +134,15 @@ func (h *AuthHandler) googleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokens, err := h.service.OAuthLogin(r.Context(), h.googleProvider.Name(), code)
+	session, err := h.service.OAuthLogin(r.Context(), h.googleProvider.Name(), code)
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
 	}
-	h.setRefreshTokenCookie(w, tokens.RefreshToken)
 
-	writeJSON(w, http.StatusOK, map[string]string{"token": tokens.AccessToken})
+	h.setSessionCookie(w, session.ID)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 }
 
 func (h *AuthHandler) handleServiceError(w http.ResponseWriter, err error) {
@@ -183,10 +180,10 @@ func (h *AuthHandler) handleServiceError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (h *AuthHandler) setRefreshTokenCookie(w http.ResponseWriter, token string) {
+func (h *AuthHandler) setSessionCookie(w http.ResponseWriter, sessionID string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     refreshTokenCookieName,
-		Value:    token,
+		Name:     sessionCookieName,
+		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   false,
@@ -195,12 +192,14 @@ func (h *AuthHandler) setRefreshTokenCookie(w http.ResponseWriter, token string)
 	})
 }
 
-func (h *AuthHandler) clearAuthCookies(w http.ResponseWriter) {
+func (h *AuthHandler) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     refreshTokenCookieName,
+		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
-		HttpOnly: true,
 		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteStrictMode,
 	})
 }

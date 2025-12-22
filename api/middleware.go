@@ -10,26 +10,35 @@ import (
 
 type contextKey string
 
-const userKey contextKey = "user"
+const (
+	userKey    contextKey = "user"
+	sessionKey contextKey = "session"
+)
 
-func AuthMiddleware(authService *auth.Service) func(http.Handler) http.Handler {
+func AuthMiddleware(service *auth.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if len(authHeader) < 7 || authHeader[:7] != "Bearer " {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid token"})
+			cookie, err := r.Cookie(sessionCookieName)
+			if err != nil || cookie.Value == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{
+					"error": "missing or invalid session",
+				})
 				return
 			}
 
-			token := authHeader[7:]
-			user, err := authService.Authenticate(r.Context(), token)
+			// validate session & get user
+			user, session, err := service.Validate(r.Context(), cookie.Value)
 			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{
+					"error": "unauthorized",
+				})
 				return
 			}
 
 			ctx := r.Context()
 			ctx = contextWithUser(ctx, user)
+			ctx = contextWithSession(ctx, session)
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -46,7 +55,16 @@ func contextWithUser(ctx context.Context, user *auth.User) context.Context {
 	return context.WithValue(ctx, userKey, user)
 }
 
+func contextWithSession(ctx context.Context, session *auth.Session) context.Context {
+	return context.WithValue(ctx, sessionKey, session)
+}
+
 func userFromContext(ctx context.Context) *auth.User {
 	user, _ := ctx.Value(userKey).(*auth.User)
 	return user
+}
+
+func SessionFromContext(ctx context.Context) *auth.Session {
+	session, _ := ctx.Value(sessionKey).(*auth.Session)
+	return session
 }

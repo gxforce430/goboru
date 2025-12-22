@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,12 +35,27 @@ type OAuthUser struct {
 	Name  string
 }
 
-type TokenPair struct {
-	AccessToken  string
-	RefreshToken string
+type Session struct {
+	ID        string
+	UserID    string
+	ExpiresAt time.Time
+	CreatedAt time.Time
 }
 
-// Contracts
+type SessionStore interface {
+	Create(ctx context.Context, session *Session) error
+	Delete(ctx context.Context, sessionID string) error
+	DeleteByUser(ctx context.Context, userID string) error
+	FindByID(ctx context.Context, sessionID string) (*Session, error)
+}
+
+type SessionManager interface {
+	Destroy(ctx context.Context, sessionID string) error
+	Create(ctx context.Context, userID string) (*Session, error)
+	Rotate(ctx context.Context, oldSessionID string) (*Session, error)
+	Validate(ctx context.Context, sessionID string) (*Session, error)
+}
+
 type UserStore interface {
 	Create(ctx context.Context, user *User) error
 	FindByID(ctx context.Context, id string) (*User, error)
@@ -51,12 +67,6 @@ type PasswordHasher interface {
 	Compare(hashed, plain string) error
 }
 
-type TokenManager interface {
-	Generate(userID string) (*TokenPair, error)
-	VerifyAccess(token string) (userID string, err error)
-	VerifyRefresh(token string) (userID string, err error)
-}
-
 type OAuthProvider interface {
 	Name() string
 	Authenticate(ctx context.Context, code string) (*OAuthUser, error)
@@ -64,23 +74,23 @@ type OAuthProvider interface {
 
 // Services
 type Service struct {
-	users  UserStore
-	tokens TokenManager
-	hasher PasswordHasher
-	oauth  map[string]OAuthProvider
+	users    UserStore
+	hasher   PasswordHasher
+	sessions SessionManager
+	oauth    map[string]OAuthProvider
 }
 
-func NewService(users UserStore, tokens TokenManager, hasher PasswordHasher, oauthProviders ...OAuthProvider) *Service {
+func NewService(users UserStore, sessions SessionManager, hasher PasswordHasher, oauthProviders ...OAuthProvider) *Service {
 	providers := make(map[string]OAuthProvider)
 	for _, p := range oauthProviders {
 		providers[p.Name()] = p
 	}
 
 	return &Service{
-		users:  users,
-		tokens: tokens,
-		hasher: hasher,
-		oauth:  providers,
+		users:    users,
+		sessions: sessions,
+		hasher:   hasher,
+		oauth:    providers,
 	}
 }
 
@@ -117,7 +127,7 @@ func (s *Service) Register(ctx context.Context, email, name, password string) (*
 	return user, nil
 }
 
-func (s *Service) Login(ctx context.Context, email, password string) (*User, *TokenPair, error) {
+func (s *Service) Login(ctx context.Context, email, password string) (*User, *Session, error) {
 	user, err := s.users.FindByEmail(ctx, email)
 	if err != nil {
 		return nil, nil, ErrInvalidCredentials
@@ -131,42 +141,42 @@ func (s *Service) Login(ctx context.Context, email, password string) (*User, *To
 		return nil, nil, ErrUserNotVerified
 	}
 
-	tokens, err := s.tokens.Generate(user.ID)
+	session, err := s.sessions.Create(ctx, user.ID)
 	if err != nil {
 		return nil, nil, err
 	}
-	return user, tokens, nil
+
+	return user, session, nil
 }
 
-func (s *Service) Refresh(ctx context.Context, refreshToken string) (*User, *TokenPair, error) {
-	userID, err := s.tokens.VerifyRefresh(refreshToken)
+func (s *Service) Refresh(ctx context.Context, sessionID string) (*User, *Session, error) {
+	session, err := s.sessions.Validate(ctx, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("session validation failed: %w", err)
 	}
 
-	user, err := s.users.FindByID(ctx, userID)
+	user, err := s.users.FindByID(ctx, session.UserID)
 	if err != nil {
 		return nil, nil, ErrUserNotFound
 	}
 
-	tokens, err := s.tokens.Generate(userID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return user, tokens, nil
+	return user, session, nil
 }
 
-func (s *Service) Authenticate(ctx context.Context, accessToken string) (*User, error) {
-	userID, err := s.tokens.VerifyAccess(accessToken)
+func (s *Service) Authenticate(ctx context.Context, sessionID string) (*User, error) {
+	session, err := s.sessions.Validate(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, ErrUnauthorized
 	}
 
-	return s.users.FindByID(context.Background(), userID)
+	return s.users.FindByID(ctx, session.UserID)
 }
 
-func (s *Service) OAuthLogin(ctx context.Context, providerName, code string) (*TokenPair, error) {
+func (s *Service) Logout(ctx context.Context, sessionID string) error {
+	return s.sessions.Destroy(ctx, sessionID)
+}
+
+func (s *Service) OAuthLogin(ctx context.Context, providerName, code string) (*Session, error) {
 	provider, ok := s.oauth[providerName]
 	if !ok {
 		return nil, ErrUnauthorized
@@ -179,7 +189,7 @@ func (s *Service) OAuthLogin(ctx context.Context, providerName, code string) (*T
 
 	user, err := s.users.FindByEmail(ctx, oauthUser.Email)
 	if err != nil {
-		user := &User{
+		user = &User{
 			ID:        uuid.NewString(),
 			Email:     oauthUser.Email,
 			Name:      oauthUser.Name,
@@ -193,5 +203,27 @@ func (s *Service) OAuthLogin(ctx context.Context, providerName, code string) (*T
 		}
 	}
 
-	return s.tokens.Generate(user.ID)
+	return s.sessions.Create(ctx, user.ID)
+}
+
+func (s *Service) Validate(ctx context.Context, sessionID string) (*User, *Session, error) {
+	if sessionID == "" {
+		return nil, nil, ErrUnauthorized
+	}
+
+	session, err := s.sessions.Validate(ctx, sessionID)
+	if err != nil {
+		return nil, nil, ErrUnauthorized
+	}
+
+	user, err := s.users.FindByID(ctx, session.UserID)
+	if err != nil {
+		return nil, nil, ErrUserNotFound
+	}
+
+	if !user.Verified {
+		return nil, nil, ErrUnauthorized
+	}
+
+	return user, session, nil
 }
