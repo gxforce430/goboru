@@ -9,6 +9,13 @@ import (
 	"github.com/google/uuid"
 )
 
+type UserRole string
+
+const (
+	RoleUser  UserRole = "user"
+	RoleAdmin UserRole = "admin"
+)
+
 var (
 	ErrUnauthorized            = errors.New("unauthorized")
 	ErrTokenInvalid            = errors.New("invalid token")
@@ -26,6 +33,7 @@ type User struct {
 	Name      string
 	Password  string // empty if OAuth user
 	Verified  bool
+	Role      UserRole
 	Provider  string // "local", "google", "github"
 	CreatedAt time.Time
 }

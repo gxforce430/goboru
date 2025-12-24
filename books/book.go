@@ -3,90 +3,106 @@ package books
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log"
-	"strings"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/fahmaliyi/goboruu/auth"
 )
 
-var ErrBookNotFound = errors.New("book not found")
+var (
+	ErrNotFound       = errors.New("book not found")
+	ErrUserRequired   = errors.New("user required")
+	ErrAccessDenied   = errors.New("full access requires purchase")
+	ErrInvalidChapter = errors.New("chapter does not belong to book")
+)
 
-type Book struct {
-	ID          string    `json:"id"`
-	Slug        string    `json:"slug"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
-	AuthorID    string    `json:"author_id"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
+type Audiobook struct {
+	ID          string
+	Title       string
+	Author      string
+	Language    string
+	Description string
+	PriceETB    int64
+	IsFree      bool
 }
 
-// Contracts
+type Chapter struct {
+	ID          string
+	BookID      string
+	Title       string
+	Order       int
+	DurationSec int
+}
+
 type Store interface {
-	List(ctx context.Context) ([]*Book, error)
-	Create(ctx context.Context, book *Book) error
-	GetByID(ctx context.Context, id string) (*Book, error)
-	GetBySlug(ctx context.Context, slug string) (*Book, error)
+	List(ctx context.Context) ([]Audiobook, error)
+	Get(ctx context.Context, bookID string) (*Audiobook, error)
+	Chapters(ctx context.Context, bookID string) ([]Chapter, error)
 }
 
+type AudioAccess interface {
+	PreviewURL(ctx context.Context, chapterID string) (string, error)
+	FullURL(ctx context.Context, userID, chapterID string) (string, error)
+}
+
+type PurchaseChecker interface {
+	HasAccess(ctx context.Context, userID, bookID string) (bool, error)
+}
+
+// Player service
 type Service struct {
-	store Store
+	Store    Store
+	Audio    AudioAccess
+	Purchase PurchaseChecker
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
-}
-
-func (s *Service) CreateBook(ctx context.Context, title, description, authorID, summary string) (*Book, error) {
-	baseSlug := strings.ToLower(strings.ReplaceAll(title, " ", "-"))
-	baseSlug = filterSpecialChars(baseSlug)
-
-	finalSlug := baseSlug
-
-	existing, err := s.store.GetBySlug(ctx, finalSlug)
-	if err == nil && existing != nil {
-		suffix := uuid.NewString()[:4]
-		finalSlug = fmt.Sprintf("%s-%s", baseSlug, suffix)
+func NewService(store Store, audio AudioAccess, purchase PurchaseChecker) *Service {
+	return &Service{
+		Store:    store,
+		Audio:    audio,
+		Purchase: purchase,
 	}
-
-	book := &Book{
-		ID:          uuid.NewString(),
-		Slug:        finalSlug,
-		Title:       title,
-		Description: description,
-		AuthorID:    authorID,
-		CreatedAt:   time.Now(),
-		Summary:     summary,
-	}
-
-	if err := s.store.Create(ctx, book); err != nil {
-		return nil, err
-	}
-	return book, nil
 }
 
-func filterSpecialChars(s string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			return r
-		}
-		return -1
-	}, s)
-}
-
-func (s *Service) GetBook(ctx context.Context, identifier string) (*Book, error) {
-	log.Printf("Searching for book with identifier: %s", identifier)
-
-	book, err := s.store.GetByID(ctx, identifier)
+func (p *Service) Play(ctx context.Context, role auth.UserRole, userID, bookID, chapterID string, preview bool) (string, error) {
+	chapters, err := p.Store.Chapters(ctx, bookID)
 	if err != nil {
-		log.Printf("ID lookup failed for %s, trying slug...", identifier)
-		return s.store.GetBySlug(ctx, identifier)
+		return "", err
 	}
-	return book, nil
-}
 
-func (s *Service) ListBooks(ctx context.Context) ([]*Book, error) {
-	return s.store.List(ctx)
+	valid := false
+	for _, ch := range chapters {
+		if ch.ID == chapterID {
+			valid = true
+			break
+		}
+	}
+
+	if !valid {
+		return "", ErrInvalidChapter
+	}
+
+	if preview {
+		return p.Audio.PreviewURL(ctx, chapterID)
+	}
+
+	// Admin orverride
+	if role == auth.RoleAdmin {
+		return p.Audio.FullURL(ctx, userID, chapterID)
+	}
+
+	book, err := p.Store.Get(ctx, bookID)
+	if err != nil {
+		return "", err
+	}
+
+	// Free book override
+	if book.IsFree {
+		return p.Audio.FullURL(ctx, userID, chapterID)
+	}
+
+	ok, err := p.Purchase.HasAccess(ctx, userID, bookID)
+	if err != nil || !ok {
+		return "", ErrAccessDenied
+	}
+
+	return p.Audio.FullURL(ctx, userID, chapterID)
 }

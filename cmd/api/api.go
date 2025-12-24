@@ -36,8 +36,8 @@ func NewAPI(authService *auth.Service, google *auth.GoogleProvider, bookService 
 	authHandler := NewAuthHandler(authService, google)
 	authHandler.RegisterRoutes(router)
 
-	bookHandler := NewBookHandler(bookService, authService)
-	bookHandler.RegisterRoutes(router)
+	booksHandler := NewBooksHandler(authService, bookService)
+	booksHandler.RegisterRoutes(router)
 
 	return &API{
 		Router: router,
